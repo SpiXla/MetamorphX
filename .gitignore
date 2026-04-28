@@ -1,0 +1,42 @@
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Build output
+dist/
+build/
+out/
+bin/
+*.exe
+*.dll
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+*.lib
+*.out
+
+# Logs
+*.log
+
+# VM and archive clutter
+*.iso
+*.ova
+*.vdi
+*.vmdk
+*.zip
+*.7z
+*.tar
+
+# Debuggers and profiling
+*.dSYM/
+core
+vgcore.*
+gmon.out
