@@ -40,3 +40,5 @@ bin/
 core
 vgcore.*
 gmon.out
+
+SAFE_TODO.md

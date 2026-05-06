@@ -6,27 +6,20 @@
 
 //  ./a.out --encrypt simple_program.exe --output evaded_program.exe --add-size 101 --delay 101
 
-typedef struct s_options {
+typedef struct s_args {
     const char *input_path;
     const char *output_path;
     long add_size_mb;
     long delay_seconds;
     int show_help;
-} t_options;
+} Args;
 
-typedef struct s_buffer {
+typedef struct s_binary_data {
     unsigned char *data;
     size_t size;
-} t_buffer;
+} Buffer;
 
-typedef struct s_build_context {
-    t_options options;
-    t_buffer input;
-    t_buffer encrypted;
-    size_t padding_size;
-} t_build_context;
-
-#define DEFAULT_DELAY_SECONDS 101
+#define DEFAULT_DELAY_SECONDS 0
 #define MIN_ADD_SIZE_MB 1
 #define MAX_ADD_SIZE_MB 1024
 #define MIN_DELAY_SECONDS 0
@@ -67,19 +60,19 @@ static int parse_number(const char *value, const char *flag_name, long *result) 
     return 1;
 }
 
-static int parse_args(int argc, char *argv[], t_options *options) {
+static int parse_args(int argc, char *argv[], Args *args) {
     int i;
     char *value;
 
-    options->input_path = NULL;
-    options->output_path = NULL;
-    options->add_size_mb = 0;
-    options->delay_seconds = DEFAULT_DELAY_SECONDS;
-    options->show_help = 0;
+    args->input_path = NULL;
+    args->output_path = NULL;
+    args->add_size_mb = 0;
+    args->delay_seconds = DEFAULT_DELAY_SECONDS;
+    args->show_help = 0;
     i = 1;
     while (i < argc) {
         if (strcmp(argv[i], "--help") == 0) {
-            options->show_help = 1;
+            args->show_help = 1;
         } else if (i + 1 >= argc ||
                    (argv[i + 1][0] == '-' && argv[i + 1][1] != '\0')) {
             fprintf(stderr, "Error: Missing value for %s.\n", argv[i]);
@@ -87,15 +80,15 @@ static int parse_args(int argc, char *argv[], t_options *options) {
         } else {
             value = argv[i + 1];
             if (strcmp(argv[i], "--encrypt") == 0) {
-                options->input_path = value;
+                args->input_path = value;
             } else if (strcmp(argv[i], "--output") == 0) {
-                options->output_path = value;
+                args->output_path = value;
             } else if (strcmp(argv[i], "--add-size") == 0) {
-                if (!parse_number(value, "--add-size", &options->add_size_mb)) {
+                if (!parse_number(value, "--add-size", &args->add_size_mb)) {
                     return 0;
                 }
             } else if (strcmp(argv[i], "--delay") == 0) {
-                if (!parse_number(value, "--delay", &options->delay_seconds)) {
+                if (!parse_number(value, "--delay", &args->delay_seconds)) {
                     return 0;
                 }
             } else {
@@ -109,29 +102,29 @@ static int parse_args(int argc, char *argv[], t_options *options) {
     return 1;
 }
 
-static int validate_options(const t_options *options) {
-    if (options->show_help) {
-        if (options->input_path != NULL || options->output_path != NULL ||
-            options->add_size_mb != 0 ||
-            options->delay_seconds != DEFAULT_DELAY_SECONDS) {
+static int validate_args(const Args *args) {
+    if (args->show_help) {
+        if (args->input_path != NULL || args->output_path != NULL ||
+            args->add_size_mb != 0 ||
+            args->delay_seconds != DEFAULT_DELAY_SECONDS) {
             fprintf(stderr,
                     "Error: --help cannot be combined with other options.\n");
             return 0;
         }
-    } else if (options->input_path == NULL) {
+    } else if (args->input_path == NULL) {
         fprintf(stderr, "Error: --encrypt <target-binary> is required.\n");
         return 0;
-    } else if (options->output_path == NULL) {
+    } else if (args->output_path == NULL) {
         fprintf(stderr, "Error: --output <output-binary> is required.\n");
         return 0;
-    } else if (options->add_size_mb != 0 &&
-               (options->add_size_mb < MIN_ADD_SIZE_MB ||
-                options->add_size_mb > MAX_ADD_SIZE_MB)) {
+    } else if (args->add_size_mb != 0 &&
+               (args->add_size_mb < MIN_ADD_SIZE_MB ||
+                args->add_size_mb > MAX_ADD_SIZE_MB)) {
         fprintf(stderr, "Error: --add-size must be between %d and %d MB.\n",
                 MIN_ADD_SIZE_MB, MAX_ADD_SIZE_MB);
         return 0;
-    } else if (options->delay_seconds < MIN_DELAY_SECONDS ||
-               options->delay_seconds > MAX_DELAY_SECONDS) {
+    } else if (args->delay_seconds < MIN_DELAY_SECONDS ||
+               args->delay_seconds > MAX_DELAY_SECONDS) {
         fprintf(stderr, "Error: --delay must be between %d and %d seconds.\n",
                 MIN_DELAY_SECONDS, MAX_DELAY_SECONDS);
         return 0;
@@ -139,121 +132,258 @@ static int validate_options(const t_options *options) {
     return 1;
 }
 
-static void init_buffer(t_buffer *buffer) {
+static void init_buffer(Buffer *buffer) {
     buffer->data = NULL;
     buffer->size = 0;
 }
 
-static void init_context(t_build_context *ctx, const t_options *options) {
-    ctx->options = *options;
-    init_buffer(&ctx->input);
-    init_buffer(&ctx->encrypted);
-    ctx->padding_size = 0;
-}
-
-static void cleanup_buffer(t_buffer *buffer) {
+static void cleanup_buffer(Buffer *buffer) {
     free(buffer->data);
     buffer->data = NULL;
     buffer->size = 0;
 }
 
-static void cleanup_context(t_build_context *ctx) {
-    cleanup_buffer(&ctx->input);
-    cleanup_buffer(&ctx->encrypted);
-}
-
-static void log_options(const t_options *options) {
+static void log_args(const Args *args) {
     printf("[INFO] Running evasion with the following options:\n");
-    printf("[INFO] Input Binary: %s\n", options->input_path);
-    printf("[INFO] Output Binary: %s\n", options->output_path);
-    if (options->add_size_mb > 0) {
-        printf("[INFO] Add Size: %ld MB\n", options->add_size_mb);
+    printf("[INFO] Input Binary: %s\n", args->input_path);
+    printf("[INFO] Output Binary: %s\n", args->output_path);
+    if (args->add_size_mb > 0) {
+        printf("[INFO] Add Size: %ld MB\n", args->add_size_mb);
     } else {
         printf("[INFO] Add Size: None\n");
     }
-    if (options->delay_seconds != DEFAULT_DELAY_SECONDS) {
-        printf("[INFO] Delay: %ld seconds\n", options->delay_seconds);
+    if (args->delay_seconds != DEFAULT_DELAY_SECONDS) {
+        printf("[INFO] Delay: %ld seconds\n", args->delay_seconds);
     } else {
         printf("[INFO] Delay: Default (%d seconds)\n", DEFAULT_DELAY_SECONDS);
     }
+    printf("\n");
 }
 
-static int load_input_binary(t_build_context *ctx) {
-    (void)ctx;
-    /*
-     * TODO:
-     * 1. Open ctx->options.input_path in binary mode.
-     * 2. Get the file size.
-     * 3. Allocate ctx->input.data.
-     * 4. Read the full file into ctx->input.
-     */
-    fprintf(stderr, "TODO: implement load_input_binary().\n");
-    return 0;
-}
+static int load_input_binary(const char *input_path, Buffer *input) {
+    FILE *file;
+    long file_size;
+    size_t bytes_read;
 
-static int encrypt_input_binary(t_build_context *ctx) {
-    (void)ctx;
-    /*
-     * TODO:
-     * 1. Allocate ctx->encrypted.data with the same size as ctx->input.
-     * 2. Apply your byte transformation or XOR routine.
-     * 3. Store the result in ctx->encrypted.
-     */
-    fprintf(stderr, "TODO: implement encrypt_input_binary().\n");
-    return 0;
-}
+    if (input == NULL) {
+        fprintf(stderr, "Error: NULL input buffer pointer.\n");
+        return 0;
+    }
 
-static int compute_padding_size(t_build_context *ctx) {
-    if (ctx->options.add_size_mb <= 0) {
-        ctx->padding_size = 0;
+    file = fopen(input_path, "rb");
+    if (file == NULL) {
+        fprintf(stderr, "Error: Failed to open input file '%s'.\n",
+                input_path);
+        return 0;
+    }
+
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fprintf(stderr, "Error: Failed to seek input file '%s'.\n",
+                input_path);
+        fclose(file);
+        return 0;
+    }
+
+    file_size = ftell(file);
+    if (file_size < 0) {
+        fprintf(stderr, "Error: Failed to determine size of '%s'.\n",
+                input_path);
+        fclose(file);
+        return 0;
+    }
+
+    if (fseek(file, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "Error: Failed to rewind input file '%s'.\n",
+                input_path);
+        fclose(file);
+        return 0;
+    }
+
+    input->size = (size_t)file_size;
+    if (input->size == 0) {
+        input->data = NULL;
+        fclose(file);
         return 1;
     }
-    ctx->padding_size = (size_t)ctx->options.add_size_mb * 1024UL * 1024UL;
+
+    input->data = malloc(input->size);
+    if (input->data == NULL) {
+        fprintf(stderr, "Error: Failed to allocate %zu bytes for input.\n",
+                input->size);
+        fclose(file);
+        return 0;
+    }
+
+    bytes_read = fread(input->data, 1, input->size, file);
+    if (bytes_read != input->size) {
+        fprintf(stderr, "Error: Failed to read input file '%s'.\n",
+                input_path);
+        cleanup_buffer(input);
+        fclose(file);
+        return 0;
+    }
+
+    fclose(file);
     return 1;
 }
 
-static int write_output_file(const t_build_context *ctx) {
-    (void)ctx;
+static int encrypt_input_binary(const Buffer *input, Buffer *encrypted) {
     /*
      * TODO:
-     * 1. Open ctx->options.output_path in binary write mode.
-     * 2. Write your custom header / metadata.
-     * 3. Write ctx->encrypted.data.
-     * 4. Append ctx->padding_size bytes if needed.
+     * 1. Allocate encrypted->data with the same size as input->size.
+     * 2. Apply your byte transformation or XOR routine.
+     * 3. Store the result in encrypted.
      */
-    fprintf(stderr, "TODO: implement write_output_file().\n");
-    return 0;
+
+    size_t i;
+    const char *key = "K9x$2LmP#7qZ!4aB";
+    if (input == NULL || encrypted == NULL) {
+        fprintf(stderr, "Error: NULL buffer pointer.\n");
+        return 0;
+    }
+
+    encrypted->data = NULL;
+    encrypted->size = 0;
+
+    if (input->size > 0 && input->data == NULL) {
+        fprintf(stderr, "Error: Input buffer data is NULL.\n");
+        return 0;
+    }
+
+    encrypted->size = input->size;
+    if (encrypted->size == 0) {
+        return 1;
+    }
+
+    encrypted->data = malloc(encrypted->size);
+    if (encrypted->data == NULL) {
+        fprintf(stderr, "Error: Failed to allocate %zu bytes.\n",
+                encrypted->size);
+        return 0;
+    }
+
+    for (i = 0; i < encrypted->size; i++) {
+        /* put your byte transformation here */
+        encrypted->data[i] = input->data[i] ^ key[i % strlen(key)];
+    }
+
+    return 1;
 }
 
-static int process_evasion(const t_options *options) {
-    t_build_context ctx;
+static size_t compute_padding_size(long add_size_mb) {
+    if (add_size_mb <= 0) {
+        return 0;
+    }
+    return (size_t)add_size_mb * 1024UL * 1024UL;
+}
+
+static int write_output_file(const char *output_path, const Buffer *encrypted,
+                             size_t padding_size, long delay_seconds) {
+    
+    (void)delay_seconds;
+
+
+     FILE *file;
+        size_t bytes_written;
+
+        if (output_path == NULL || encrypted == NULL) {
+            fprintf(stderr, "Error: NULL output path or encrypted buffer.\n");
+            return 0;
+        }
+        if (encrypted->size > 0 && encrypted->data == NULL) {
+            fprintf(stderr, "Error: Encrypted buffer data is NULL.\n");
+            return 0;
+        }
+
+        if (padding_size > MAX_ADD_SIZE_MB || padding_size < MIN_ADD_SIZE_MB) {
+            fprintf(stderr, "Error: Padding size is out of bounds.\n");
+            return 0;
+        }
+
+        if (delay_seconds < MIN_DELAY_SECONDS || delay_seconds > MAX_DELAY_SECONDS) {
+            fprintf(stderr, "Error: Delay is out of bounds.\n");
+            return 0;
+        }
+
+        file = fopen(output_path, "wb");
+        if (file == NULL) {
+            fprintf(stderr, "Error: Failed to open output file '%s'.\n",
+                    output_path);
+            return 0;
+        }
+
+        bytes_written = fwrite(encrypted->data, 1, encrypted->size, file);
+        if (bytes_written != encrypted->size) {
+            fprintf(stderr, "Error: Failed to write output file '%s'.\n",
+                    output_path);
+            fclose(file);
+            return 0;
+        }
+
+        if (padding_size > 0) {
+            unsigned char *padding = calloc(1, padding_size);
+            if (padding == NULL) {
+                fprintf(stderr, "Error: Failed to allocate padding.\n");
+                fclose(file);
+                return 0;
+            }
+            bytes_written = fwrite(padding, 1, padding_size, file);
+            free(padding);
+            if (bytes_written != padding_size) {
+                fprintf(stderr, "Error: Failed to write padding to '%s'.\n",
+                        output_path);
+                fclose(file);
+                return 0;
+            }
+        }
+
+        bytes_written = fwrite(&delay_seconds, sizeof(long), 1, file);
+        if (bytes_written != 1) {
+            fprintf(stderr, "Error: Failed to write delay to '%s'.\n",
+                    output_path);
+            fclose(file);
+            return 0;
+        }
+
+        fclose(file);
+    return 1;
+}
+
+static int process_evasion(const Args *args) {
+    Buffer input;
+    Buffer encrypted;
+    size_t padding_size;
     int success;
 
-    init_context(&ctx, options);
-    log_options(options);
-    printf("\n");
-    success = load_input_binary(&ctx) && encrypt_input_binary(&ctx) &&
-              compute_padding_size(&ctx) && write_output_file(&ctx);
-    cleanup_context(&ctx);
+    init_buffer(&input);
+    init_buffer(&encrypted);
+    log_args(args);
+    padding_size = compute_padding_size(args->add_size_mb);
+    success = load_input_binary(args->input_path, &input) &&
+              encrypt_input_binary(&input, &encrypted) &&
+              write_output_file(args->output_path, &encrypted, padding_size,
+                                args->delay_seconds);
+    cleanup_buffer(&input);
+    cleanup_buffer(&encrypted);
     return success;
 }
 
 int main(int argc, char *argv[]) {
-    t_options options;
+    Args args;
 
     if (argc == 1) {
         print_usage(argv[0]);
         return 1;
     }
-    if (!parse_args(argc, argv, &options) || !validate_options(&options)) {
+    if (!parse_args(argc, argv, &args) || !validate_args(&args)) {
         print_usage(argv[0]);
         return 1;
     }
-    if (options.show_help) {
+    if (args.show_help) {
         print_usage(argv[0]);
         return 0;
     }
-    if (!process_evasion(&options)) {
+    if (!process_evasion(&args)) {
         return 1;
     }
     return 0;
