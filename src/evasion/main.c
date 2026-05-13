@@ -19,6 +19,17 @@ typedef struct s_binary_data {
     size_t size;
 } Buffer;
 
+typedef struct s_header {
+    char magic[4];
+    unsigned int version;
+    unsigned int payload_size;
+    unsigned int padding_size;
+    unsigned int key_length;
+    unsigned int delay_seconds;
+    unsigned char key[256];
+} Header;
+
+#define FORMAT_VERSION 1
 #define DEFAULT_DELAY_SECONDS 0
 #define MIN_ADD_SIZE_MB 1
 #define MAX_ADD_SIZE_MB 1024
@@ -228,12 +239,6 @@ static int load_input_binary(const char *input_path, Buffer *input) {
 }
 
 static int encrypt_input_binary(const Buffer *input, Buffer *encrypted) {
-    /*
-     * TODO:
-     * 1. Allocate encrypted->data with the same size as input->size.
-     * 2. Apply your byte transformation or XOR routine.
-     * 3. Store the result in encrypted.
-     */
 
     size_t i;
     const char *key = "K9x$2LmP#7qZ!4aB";
@@ -274,78 +279,187 @@ static size_t compute_padding_size(long add_size_mb) {
     if (add_size_mb <= 0) {
         return 0;
     }
+
     return (size_t)add_size_mb * 1024UL * 1024UL;
 }
 
 static int write_output_file(const char *output_path, const Buffer *encrypted,
                              size_t padding_size, long delay_seconds) {
-    
-    (void)delay_seconds;
+    const size_t min_padding_size =
+        (size_t)MIN_ADD_SIZE_MB * 1024UL * 1024UL;
+    const size_t max_padding_size =
+        (size_t)MAX_ADD_SIZE_MB * 1024UL * 1024UL;
+    FILE *file;
+    size_t bytes_written;
 
+    if (output_path == NULL || encrypted == NULL) {
+        fprintf(stderr, "Error: NULL output path or encrypted buffer.\n");
+        return 0;
+    }
+    if (encrypted->size > 0 && encrypted->data == NULL) {
+        fprintf(stderr, "Error: Encrypted buffer data is NULL.\n");
+        return 0;
+    }
 
-     FILE *file;
-        size_t bytes_written;
+    if (padding_size > 0 &&
+        (padding_size < min_padding_size || padding_size > max_padding_size)) {
+        fprintf(stderr, "Error: Padding size is out of bounds.\n");
+        return 0;
+    }
 
-        if (output_path == NULL || encrypted == NULL) {
-            fprintf(stderr, "Error: NULL output path or encrypted buffer.\n");
-            return 0;
-        }
-        if (encrypted->size > 0 && encrypted->data == NULL) {
-            fprintf(stderr, "Error: Encrypted buffer data is NULL.\n");
-            return 0;
-        }
+    if (delay_seconds < MIN_DELAY_SECONDS ||
+        delay_seconds > MAX_DELAY_SECONDS) {
+        fprintf(stderr, "Error: Delay is out of bounds.\n");
+        return 0;
+    }
 
-        if (padding_size > MAX_ADD_SIZE_MB || padding_size < MIN_ADD_SIZE_MB) {
-            fprintf(stderr, "Error: Padding size is out of bounds.\n");
-            return 0;
-        }
-
-        if (delay_seconds < MIN_DELAY_SECONDS || delay_seconds > MAX_DELAY_SECONDS) {
-            fprintf(stderr, "Error: Delay is out of bounds.\n");
-            return 0;
-        }
-
-        file = fopen(output_path, "wb");
-        if (file == NULL) {
-            fprintf(stderr, "Error: Failed to open output file '%s'.\n",
-                    output_path);
-            return 0;
-        }
-
-        bytes_written = fwrite(encrypted->data, 1, encrypted->size, file);
-        if (bytes_written != encrypted->size) {
-            fprintf(stderr, "Error: Failed to write output file '%s'.\n",
-                    output_path);
-            fclose(file);
-            return 0;
-        }
-
-        if (padding_size > 0) {
-            unsigned char *padding = calloc(1, padding_size);
-            if (padding == NULL) {
-                fprintf(stderr, "Error: Failed to allocate padding.\n");
-                fclose(file);
-                return 0;
-            }
-            bytes_written = fwrite(padding, 1, padding_size, file);
-            free(padding);
-            if (bytes_written != padding_size) {
-                fprintf(stderr, "Error: Failed to write padding to '%s'.\n",
-                        output_path);
-                fclose(file);
-                return 0;
-            }
-        }
-
-        bytes_written = fwrite(&delay_seconds, sizeof(long), 1, file);
-        if (bytes_written != 1) {
-            fprintf(stderr, "Error: Failed to write delay to '%s'.\n",
-                    output_path);
-            fclose(file);
-            return 0;
-        }
-
+    file = fopen(output_path, "wb");
+    if (file == NULL) {
+        fprintf(stderr, "Error: Failed to open output file '%s'.\n",
+                output_path);
+        return 0;
+    }
+    Header header = {
+        .magic = {'E', 'V', 'A', 'D'},
+        .version = 1,
+        .payload_size = (unsigned int)encrypted->size,
+        .padding_size = (unsigned int)padding_size,
+        .delay_seconds = (unsigned int)delay_seconds,
+        .key = {"K9x$2LmP#7qZ!4aB"},
+        .key_length = 16
+    };
+    bytes_written = fwrite(&header, sizeof(header), 1, file);
+    if (bytes_written != 1) {
+        fprintf(stderr, "Error: Failed to write header to '%s'.\n",
+                output_path);
         fclose(file);
+        return 0;
+    }
+
+    bytes_written = fwrite(encrypted->data, 1, encrypted->size, file);
+    if (bytes_written != encrypted->size) {
+        fprintf(stderr, "Error: Failed to write output file '%s'.\n",
+                output_path);
+        fclose(file);
+        return 0;
+    }
+
+    if (padding_size > 0) {
+        unsigned char *padding = calloc(1, padding_size);
+        if (padding == NULL) {
+            fprintf(stderr, "Error: Failed to allocate padding.\n");
+            fclose(file);
+            return 0;
+        }
+        bytes_written = fwrite(padding, 1, padding_size, file);
+        free(padding);
+        if (bytes_written != padding_size) {
+            fprintf(stderr, "Error: Failed to write padding to '%s'.\n",
+                    output_path);
+            fclose(file);
+            return 0;
+        }
+    }
+
+    fclose(file);
+
+    size_t file_size = 0;
+    Header read_header;
+    if (!read_output_file(output_path, &file_size, &read_header)) {
+        return 0;
+    }
+
+    if (!validate_container_header(file_size, &read_header)) {
+        return 0;
+    }
+
+    return 1;
+}
+
+static int read_output_file(const char *path, size_t *file_size, Header *header){ 
+    FILE *file = fopen(path, "rb");
+    if (file == NULL) {
+        fprintf(stderr, "Error: Failed to open output file '%s'.\n",
+                path);
+        return 0;  
+    }
+
+    if (fseek(file, 0, SEEK_END) != 0) {
+        fprintf(stderr, "Error: Failed to seek output file '%s'.\n",
+                path);
+        fclose(file);
+        return 0;
+    }
+
+    *file_size = ftell(file);
+    if (*file_size < 0) {
+        fprintf(stderr, "Error: Failed to determine size of '%s'.\n",
+                path);
+        fclose(file);
+        return 0;
+    }
+
+    if (fseek(file, 0, SEEK_SET) != 0) {
+        fprintf(stderr, "Error: Failed to rewind output file '%s'.\n",
+                path);
+        fclose(file);
+        return 0;
+    }
+
+    if (fread(header, sizeof(Header), 1, file) != 1) {
+        fprintf(stderr, "Error: Failed to read header from '%s'.\n",
+                path);
+        fclose(file);
+        return 0;
+    }
+
+    fclose(file);
+    return 1;
+}
+
+
+static int validate_container_header(size_t actual_file_size,
+                                     const Header *header){ 
+    size_t expected_size;
+
+    if (header == NULL) {
+        fprintf(stderr, "Error: header is NULL.\n");
+        return 0;
+    }
+
+    if (memcmp(header->magic, "EVAD", 4) != 0) {
+        fprintf(stderr, "Error: invalid magic value.\n");
+        return 0;
+    }
+
+    if (header->version != FORMAT_VERSION) {
+        fprintf(stderr, "Error: unsupported version %u.\n", header->version);
+        return 0;
+    }
+
+    if (header->padding_size > MAX_ADD_SIZE_MB * 1024UL * 1024UL) {
+        fprintf(stderr, "Error: padding_size is too large.\n");
+        return 0;
+    }
+
+    expected_size = sizeof(*header);
+    expected_size += (size_t)header->payload_size;
+    expected_size += (size_t)header->padding_size;
+
+    if (expected_size < sizeof(header) || expected_size < header->payload_size ||
+        expected_size < header->padding_size) {
+        fprintf(stderr, "Error: size overflow detected.\n");
+        return 0;
+    }
+
+    if (expected_size != actual_file_size) {
+        fprintf(stderr,
+                "Error: truncated or malformed file "
+                "(expected %zu bytes, got %zu).\n",
+                expected_size, actual_file_size);
+        return 0;
+    }
+
     return 1;
 }
 
